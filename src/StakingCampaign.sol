@@ -9,6 +9,8 @@ import "lib/forge-std/src/console.sol";
 
 contract MultiTokenStakingCampaign is Ownable, ReentrancyGuard {
     using SafeERC20 for IERC20;
+    uint256 constant SCALE_FACTOR = 10 ** 18;
+
     struct CampaignMetadata {
         address rewardToken;
         uint256 startTime;
@@ -17,6 +19,7 @@ contract MultiTokenStakingCampaign is Ownable, ReentrancyGuard {
         uint256 totalRewards;
         uint256 accumulatedStakeTime;
         uint256 unclaimedRewards;
+        uint256 rewardCoefficient;
         mapping(address => uint256) totalStaked;
     }
 
@@ -61,6 +64,7 @@ contract MultiTokenStakingCampaign is Ownable, ReentrancyGuard {
     event RewardsClaimed(uint256 campaignId, address staker, uint256 reward);
     event UnclaimedRewardsClaimed(uint256 campaignId, uint256 amount);
     event TokensReturned(uint256 campaignId, address staker);
+    event RewardsSettled(uint256 campaignId);
 
     function createCampaign(
         address _rewardToken,
@@ -101,9 +105,11 @@ contract MultiTokenStakingCampaign is Ownable, ReentrancyGuard {
         newCampaign.metadata.startTime = _startTime;
         newCampaign.metadata.endTime = _endTime;
         newCampaign.metadata.rewardClaimEnd = _rewardClaimEnd;
+        console.log("newCampaign.metadata.rewardClaimEnd", newCampaign.metadata.rewardClaimEnd);
         newCampaign.metadata.totalRewards = _totalRewards;
         newCampaign.metadata.accumulatedStakeTime = 0;
         newCampaign.metadata.unclaimedRewards = _totalRewards;
+        newCampaign.metadata.rewardCoefficient = 1;
 
         emit CampaignCreated(
             campaigns.length - 1,
@@ -151,13 +157,15 @@ contract MultiTokenStakingCampaign is Ownable, ReentrancyGuard {
         }
 
         uint256 stakingDuration = campaign.metadata.endTime - block.timestamp;
-        uint256 rewardWeight = _amount * stakingDuration;
-        uint256 pendingReward = (rewardWeight * campaign.metadata.totalRewards) / campaign.metadata.accumulatedStakeTime;
-        campaign.userPendingRewards[msg.sender] += pendingReward;
-        campaign.metadata.unclaimedRewards -= pendingReward;
+        require(stakingDuration > 0, "Invalid staking duration");
+        require(_amount > 0, "Invalid staking amount");
+
+        uint256 rewardWeight = calculateRewardWeight(_amount, stakingDuration);
+        campaign.userPendingRewards[msg.sender] += rewardWeight;
         campaign.metadata.totalStaked[_tokenAddress] += _amount;
-        // token price not considered here
-        campaign.metadata.accumulatedStakeTime += rewardWeight;
+        campaign.metadata.accumulatedStakeTime += stakingDuration;
+
+        campaign.metadata.unclaimedRewards -= rewardWeight;
 
         UserStakeInfo memory userStake;
         userStake.amount = _amount;
@@ -167,10 +175,28 @@ contract MultiTokenStakingCampaign is Ownable, ReentrancyGuard {
         campaign.userStakes[msg.sender].push(userStake);
 
         emit TokensStaked(_campaignId, msg.sender, _tokenAddress, _amount);
-        console.log("User address:", msg.sender);
-        console.log("Staked amount:", _amount);
-        console.log("Token address:", _tokenAddress);
-        console.log("Campaign ID:", _campaignId);
+    }
+
+    function calculateRewardWeight(
+        uint256 amount,
+        uint256 duration
+    ) internal pure returns (uint256) {
+        // 根据实际需求调整奖励权重计算公式
+        return (amount * duration) / SCALE_FACTOR;
+    }
+
+    function settleRewards(uint256 _campaignId) external onlyOwner {
+        Campaign storage campaign = campaigns[_campaignId];
+        require(
+            block.timestamp > campaign.metadata.endTime,
+            "Campaign has not ended"
+        );
+
+        campaign.metadata.rewardCoefficient =
+            campaign.metadata.totalRewards /
+            campaign.metadata.accumulatedStakeTime;
+
+        emit RewardsSettled(_campaignId);
     }
 
     function claimRewards(uint256 _campaignId) external nonReentrant {
@@ -179,46 +205,55 @@ contract MultiTokenStakingCampaign is Ownable, ReentrancyGuard {
             block.timestamp > campaign.metadata.endTime,
             "Campaign has not ended"
         );
+        console.log("block timestamp", block.timestamp);
+        console.log("campaign.metadata.rewardClaimEnd", campaign.metadata.rewardClaimEnd);
         require(
             block.timestamp <= campaign.metadata.rewardClaimEnd,
             "Reward claim period has ended"
         );
 
-        UserStakeInfo[] storage userStakes = campaign.userStakes[msg.sender];
-        require(userStakes.length > 0, "No staked tokens found");
-        for (uint256 i = 0; i < userStakes.length; i++) {
-            UserStakeInfo storage userStake = userStakes[i];
+        uint256 reward = campaign.userPendingRewards[msg.sender];
+        require(reward > 0, "No rewards to claim");
 
+        uint256 finalReward = reward * campaign.metadata.rewardCoefficient;
+
+        for (uint256 i = 0; i < campaign.userStakes[msg.sender].length; i++) {
+            UserStakeInfo storage userStake = campaign.userStakes[msg.sender][
+                i
+            ];
             IERC20(userStake.tokenAddress).safeTransfer(
                 msg.sender,
                 userStake.amount
             );
-
-            delete campaign.userStakes[msg.sender][i];
         }
-        emit TokensReturned(_campaignId, msg.sender);
-        
-        uint256 reward = campaign.userPendingRewards[msg.sender];
-        require(reward > 0, "No rewards to claim");
-        IERC20(campaign.metadata.rewardToken).safeTransfer(msg.sender, reward);
-        campaign.userPendingRewards[msg.sender] = 0;
-        emit RewardsClaimed(_campaignId, msg.sender, reward);
 
-        console.log("User address:", msg.sender);
-        console.log("Claimed reward:", reward);
-        console.log("Campaign ID:", _campaignId);
+        campaign.userPendingRewards[msg.sender] = 0;
+        campaign.metadata.unclaimedRewards -= finalReward;
+        IERC20(campaign.metadata.rewardToken).safeTransfer(
+            msg.sender,
+            finalReward
+        );
+        emit RewardsClaimed(_campaignId, msg.sender, finalReward);
+
+        emit TokensReturned(_campaignId, msg.sender);
     }
 
-    function claimUnclaimedRewards(uint256 _campaignId) external onlyOwner nonReentrant {
+    function claimUnclaimedRewards(
+        uint256 _campaignId
+    ) external onlyOwner nonReentrant {
         Campaign storage campaign = campaigns[_campaignId];
-        require(block.timestamp > campaign.metadata.rewardClaimEnd, "Reward claim period has not ended");
+        require(
+            block.timestamp > campaign.metadata.rewardClaimEnd,
+            "Reward claim period has not ended"
+        );
 
-        uint256 unclaimedRewards = campaign.metadata.unclaimedRewards; // 使用记录的未领取奖励
+        uint256 unclaimedRewards = campaign.metadata.unclaimedRewards;
 
-        IERC20(campaign.metadata.rewardToken).safeTransfer(owner(), unclaimedRewards);
+        IERC20(campaign.metadata.rewardToken).safeTransfer(
+            owner(),
+            unclaimedRewards
+        );
         emit UnclaimedRewardsClaimed(_campaignId, unclaimedRewards);
-        console.log("Owner claimed unclaimed rewards:", unclaimedRewards);
-        console.log("Campaign ID:", _campaignId);
     }
 
     function getCampaignMetadata(
