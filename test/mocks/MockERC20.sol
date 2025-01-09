@@ -67,11 +67,11 @@ contract MockERC20 is Token {
     }
 
     function transferFrom(address _from, address _to, uint256 _value) public override returns (bool success) {
-        uint256 allowance = allowed[_from][msg.sender];
-        require(balances[_from] >= _value && allowance >= _value, "token balance or allowance is lower than amount requested");
+        uint256 allowedAmount = allowed[_from][msg.sender];
+        require(balances[_from] >= _value && allowedAmount >= _value, "token balance or allowedAmount is lower than amount requested");
         balances[_to] += _value;
         balances[_from] -= _value;
-        if (allowance < MAX_UINT256) {
+        if (allowedAmount < MAX_UINT256) {
             allowed[_from][msg.sender] -= _value;
         }
         emit Transfer(_from, _to, _value); //solhint-disable-line indent, no-unused-vars

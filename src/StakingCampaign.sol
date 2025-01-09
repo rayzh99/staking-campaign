@@ -20,6 +20,7 @@ contract MultiTokenStakingCampaign is Ownable, ReentrancyGuard {
         uint256 accumulatedStakeTime;
         uint256 unclaimedRewards;
         uint256 rewardCoefficient;
+        uint256 stakingTarget;
         mapping(address => uint256) totalStaked;
     }
 
@@ -35,6 +36,10 @@ contract MultiTokenStakingCampaign is Ownable, ReentrancyGuard {
         CampaignMetadata metadata;
         mapping(address => UserStakeInfo[]) userStakes;
         mapping(address => uint256) userPendingRewards;
+        mapping(address => uint256) userStakeCount;
+        uint256 totalStakeCount;
+        uint256 totalWeight;
+        uint256 totalRewardAllocated;
         address[] stakeholders;
         mapping(address => bool) hasStaked;
     }
@@ -51,7 +56,8 @@ contract MultiTokenStakingCampaign is Ownable, ReentrancyGuard {
         uint256 startTime,
         uint256 endTime,
         uint256 rewardClaimEnd,
-        uint256 totalRewards
+        uint256 totalRewards,
+        uint256 stakingTarget
     );
 
     event TokensStaked(
@@ -71,7 +77,8 @@ contract MultiTokenStakingCampaign is Ownable, ReentrancyGuard {
         uint256 _startTime,
         uint256 _endTime,
         uint256 _rewardClaimEnd,
-        uint256 _totalRewards
+        uint256 _totalRewards,
+        uint256 _stakingTarget
     ) external onlyOwner {
         require(
             _startTime > block.timestamp,
@@ -105,18 +112,25 @@ contract MultiTokenStakingCampaign is Ownable, ReentrancyGuard {
         newCampaign.metadata.startTime = _startTime;
         newCampaign.metadata.endTime = _endTime;
         newCampaign.metadata.rewardClaimEnd = _rewardClaimEnd;
-        console.log("newCampaign.metadata.rewardClaimEnd", newCampaign.metadata.rewardClaimEnd);
+        console.log(
+            "newCampaign.metadata.rewardClaimEnd",
+            newCampaign.metadata.rewardClaimEnd
+        );
         newCampaign.metadata.totalRewards = _totalRewards;
         newCampaign.metadata.accumulatedStakeTime = 0;
         newCampaign.metadata.unclaimedRewards = _totalRewards;
         newCampaign.metadata.rewardCoefficient = 1;
+        newCampaign.metadata.stakingTarget = _stakingTarget > 0
+            ? _stakingTarget
+            : 0;
 
         emit CampaignCreated(
             campaigns.length - 1,
             _startTime,
             _endTime,
             _rewardClaimEnd,
-            _totalRewards
+            _totalRewards,
+            _stakingTarget
         );
         console.log("Campaign created with ID:", campaigns.length - 1);
     }
@@ -160,29 +174,81 @@ contract MultiTokenStakingCampaign is Ownable, ReentrancyGuard {
         require(stakingDuration > 0, "Invalid staking duration");
         require(_amount > 0, "Invalid staking amount");
 
-        uint256 rewardWeight = calculateRewardWeight(_amount, stakingDuration);
-        campaign.userPendingRewards[msg.sender] += rewardWeight;
-        campaign.metadata.totalStaked[_tokenAddress] += _amount;
         campaign.metadata.accumulatedStakeTime += stakingDuration;
 
-        campaign.metadata.unclaimedRewards -= rewardWeight;
+        campaign.userStakeCount[msg.sender]++;
+        campaign.totalStakeCount++;
 
+        uint256 rewardWeight = calculateRewardWeight(
+            _amount,
+            stakingDuration,
+            campaign.metadata.stakingTarget,
+            campaign.metadata.totalStaked[_tokenAddress],
+            campaign.metadata.accumulatedStakeTime,
+            campaign.userStakeCount[msg.sender],
+            campaign.totalStakeCount
+        );
+
+        campaign.totalWeight += rewardWeight;
+
+        uint256 reward = calculateReward(
+            rewardWeight,
+            campaign.metadata.totalRewards,
+            campaign.totalWeight
+        );
+
+        campaign.totalRewardAllocated += reward;
+
+        campaign.userPendingRewards[msg.sender] += reward;
+        campaign.metadata.totalStaked[_tokenAddress] += _amount;
         UserStakeInfo memory userStake;
         userStake.amount = _amount;
         userStake.startTime = block.timestamp;
         userStake.tokenAddress = _tokenAddress;
         userStake.rewardWeight = rewardWeight;
+        userStake.pendingReward = reward;
         campaign.userStakes[msg.sender].push(userStake);
-
         emit TokensStaked(_campaignId, msg.sender, _tokenAddress, _amount);
     }
 
     function calculateRewardWeight(
         uint256 amount,
-        uint256 duration
+        uint256 duration,
+        uint256 stakingTarget,
+        uint256 totalStaked,
+        uint256 totalDuration,
+        uint256 userStakeCount,
+        uint256 totalStakeCount
     ) internal pure returns (uint256) {
-        // 根据实际需求调整奖励权重计算公式
-        return (amount * duration) / SCALE_FACTOR;
+        uint256 amountWeight;
+
+        if (totalStaked < stakingTarget) {
+            amountWeight = (amount * 100) / stakingTarget;
+        } else {
+            amountWeight = (amount * 100) / totalStaked;
+        }
+
+        uint256 durationWeight = (duration * 100) / totalDuration;
+        uint256 stakeWeight = (userStakeCount * 100) / totalStakeCount;
+
+        uint256 totalWeight = (amountWeight *
+            40 +
+            durationWeight *
+            40 +
+            stakeWeight *
+            20) / 100;
+
+        uint256 scaledWeight = (totalWeight * 98) / 100 + 1;
+        return scaledWeight;
+    }
+
+    function calculateReward(
+        uint256 rewardWeight,
+        uint256 totalRewards,
+        uint256 totalWeight
+    ) internal pure returns (uint256) {
+        uint256 reward = (rewardWeight * totalRewards) / totalWeight;
+        return reward;
     }
 
     function settleRewards(uint256 _campaignId) external onlyOwner {
@@ -193,10 +259,20 @@ contract MultiTokenStakingCampaign is Ownable, ReentrancyGuard {
         );
 
         campaign.metadata.rewardCoefficient =
-            campaign.metadata.totalRewards /
-            campaign.metadata.accumulatedStakeTime;
-
+            (campaign.metadata.totalRewards * SCALE_FACTOR) /
+            campaign.totalRewardAllocated;
+        console.log(
+            "campaign.metadata.rewardCoefficient",
+            campaign.metadata.rewardCoefficient
+        );
         emit RewardsSettled(_campaignId);
+    }
+
+    function calculateFinalReward(
+        uint256 reward,
+        uint256 rewardCoefficient
+    ) internal pure returns (uint256) {
+        return (reward * rewardCoefficient) / SCALE_FACTOR;
     }
 
     function claimRewards(uint256 _campaignId) external nonReentrant {
@@ -206,16 +282,21 @@ contract MultiTokenStakingCampaign is Ownable, ReentrancyGuard {
             "Campaign has not ended"
         );
         console.log("block timestamp", block.timestamp);
-        console.log("campaign.metadata.rewardClaimEnd", campaign.metadata.rewardClaimEnd);
+        console.log(
+            "campaign.metadata.rewardClaimEnd",
+            campaign.metadata.rewardClaimEnd
+        );
         require(
             block.timestamp <= campaign.metadata.rewardClaimEnd,
             "Reward claim period has ended"
         );
-
         uint256 reward = campaign.userPendingRewards[msg.sender];
         require(reward > 0, "No rewards to claim");
 
-        uint256 finalReward = reward * campaign.metadata.rewardCoefficient;
+        uint256 finalReward = calculateFinalReward(
+            reward,
+            campaign.metadata.rewardCoefficient
+        );
 
         for (uint256 i = 0; i < campaign.userStakes[msg.sender].length; i++) {
             UserStakeInfo storage userStake = campaign.userStakes[msg.sender][
@@ -226,7 +307,6 @@ contract MultiTokenStakingCampaign is Ownable, ReentrancyGuard {
                 userStake.amount
             );
         }
-
         campaign.userPendingRewards[msg.sender] = 0;
         campaign.metadata.unclaimedRewards -= finalReward;
         IERC20(campaign.metadata.rewardToken).safeTransfer(
@@ -234,7 +314,6 @@ contract MultiTokenStakingCampaign is Ownable, ReentrancyGuard {
             finalReward
         );
         emit RewardsClaimed(_campaignId, msg.sender, finalReward);
-
         emit TokensReturned(_campaignId, msg.sender);
     }
 
@@ -267,7 +346,13 @@ contract MultiTokenStakingCampaign is Ownable, ReentrancyGuard {
             uint256 endTime,
             uint256 rewardClaimEnd,
             uint256 totalRewards,
-            uint256 accumulatedStakeTime
+            uint256 accumulatedStakeTime,
+            uint256 unclaimedRewards,
+            uint256 rewardCoefficient,
+            uint256 stakingTarget,
+            uint256 totalStakeCount,
+            uint256 totalWeight,
+            uint256 totalRewardAllocated
         )
     {
         Campaign storage campaign = campaigns[_campaignId];
@@ -278,7 +363,13 @@ contract MultiTokenStakingCampaign is Ownable, ReentrancyGuard {
             metadata.endTime,
             metadata.rewardClaimEnd,
             metadata.totalRewards,
-            metadata.accumulatedStakeTime
+            metadata.accumulatedStakeTime,
+            metadata.unclaimedRewards,
+            metadata.rewardCoefficient,
+            metadata.stakingTarget,
+            campaign.totalStakeCount,
+            campaign.totalWeight,
+            campaign.totalRewardAllocated
         );
     }
 }
