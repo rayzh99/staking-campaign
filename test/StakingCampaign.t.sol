@@ -11,7 +11,8 @@ contract MultiTokenStakingCampaignTest is Test {
     MockERC20 public stakeToken;
     Helper public helper;
     address public owner = address(0x123);
-    address public user = address(0x456);
+    address public user1 = address(0x456);
+    address public user2 = address(0x789);
 
     function setUp() public {
         rewardToken = new MockERC20(1000000, "RewardToken", 18, "RTK");
@@ -19,15 +20,14 @@ contract MultiTokenStakingCampaignTest is Test {
         campaignContract = new MultiTokenStakingCampaign(owner, address(0));
 
         rewardToken.transfer(owner, 1000);
-        stakeToken.transfer(user, 1000);
+        stakeToken.transfer(user1, 1000);
+        stakeToken.transfer(user2, 1000);
 
         vm.startPrank(owner);
         rewardToken.approve(address(campaignContract), 1000);
         vm.stopPrank();
 
         helper = new Helper(campaignContract);
-
-        // address alice = address(1);
     }
 
     function testCreateCampaign() public {
@@ -74,14 +74,15 @@ contract MultiTokenStakingCampaignTest is Test {
     function testStakeTokens() public {
         testCreateCampaign();
         vm.warp(block.timestamp + 1 hours + 1 seconds);
-        vm.startPrank(user);
-        stakeToken.approve(address(campaignContract), 1000);
-        campaignContract.stakeTokens(0, address(stakeToken), 100);
-        vm.warp(block.timestamp + 10 seconds);
-        campaignContract.stakeTokens(0, address(stakeToken), 100);
+        vm.startPrank(user1);
+        stakeToken.approve(address(campaignContract), 500);
+        campaignContract.stakeTokens(0, address(stakeToken), 500);
         vm.stopPrank();
 
-        helper.printCampaignMetadata(0);
+        vm.startPrank(user2);
+        stakeToken.approve(address(campaignContract), 500);
+        campaignContract.stakeTokens(0, address(stakeToken), 500);
+        vm.stopPrank();
     }
 
     function testSettleRewards() public {
@@ -90,49 +91,35 @@ contract MultiTokenStakingCampaignTest is Test {
         vm.startPrank(owner);
         campaignContract.settleRewards(0);
         vm.stopPrank();
-        helper.printCampaignMetadata(0);
+        // helper.printCampaignMetadata(0);
     }
 
     function testClaimRewards() public {
         testSettleRewards();
         vm.warp(block.timestamp + 10 seconds);
-        vm.startPrank(user);
-        console.log("block timestamp", block.timestamp);
 
-        // 检查领取奖励前的初始余额
-        uint256 initialRewardBalance = rewardToken.balanceOf(user);
-        uint256 initialStakeBalance = stakeToken.balanceOf(user);
-
+        vm.startPrank(user1);
+        uint256 initialRewardBalance1 = rewardToken.balanceOf(user1);
+        uint256 initialStakeBalance1 = stakeToken.balanceOf(user1);
         campaignContract.claimRewards(0);
-
-        // 检查领取奖励后的余额变化
-        uint256 finalRewardBalance = rewardToken.balanceOf(user);
-        uint256 finalStakeBalance = stakeToken.balanceOf(user);
-
-        console.log("Initial reward balance:", initialRewardBalance);
-        console.log("Final reward balance:", finalRewardBalance);
-        console.log(
-            "Reward claimed:",
-            finalRewardBalance - initialRewardBalance
-        );
-
-        console.log("Initial stake balance:", initialStakeBalance);
-        console.log("Final stake balance:", finalStakeBalance);
-        console.log(
-            "Staked tokens returned:",
-            finalStakeBalance - initialStakeBalance
-        );
-
-        // 断言奖励和质押代币的返回
-        uint256 rewardClaimed = finalRewardBalance - initialRewardBalance;
-        uint256 stakedTokensReturned = finalStakeBalance - initialStakeBalance;
-        console.log("Reward claimed:", rewardClaimed);
-        console.log("Staked tokens returned:", stakedTokensReturned);
-        // assert(rewardClaimed > 0);
-        // assert(stakedTokensReturned == 1000); // 确保质押的代币正确返还
-
+        uint256 finalRewardBalance1 = rewardToken.balanceOf(user1);
+        uint256 finalStakeBalance1 = stakeToken.balanceOf(user1);
+        assert(finalRewardBalance1 > initialRewardBalance1);
+        assert(finalStakeBalance1 == initialStakeBalance1 + 500);
         vm.stopPrank();
+
+        vm.startPrank(user2);
+        uint256 initialRewardBalance2 = rewardToken.balanceOf(user2);
+        uint256 initialStakeBalance2 = stakeToken.balanceOf(user2);
+        campaignContract.claimRewards(0);
+        uint256 finalRewardBalance2 = rewardToken.balanceOf(user2);
+        uint256 finalStakeBalance2 = stakeToken.balanceOf(user2);
+        assert(finalRewardBalance2 > initialRewardBalance2);
+        assert(finalStakeBalance2 == initialStakeBalance2 + 500);
+        vm.stopPrank();
+        helper.printCampaignMetadata(0);
     }
+
 }
 
 contract Helper {
