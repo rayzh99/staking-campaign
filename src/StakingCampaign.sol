@@ -24,19 +24,13 @@ contract MultiTokenStakingCampaign is Ownable, ReentrancyGuard {
         mapping(address => uint256) totalStaked;
     }
 
-    struct UserStakeInfo {
-        uint256 amount;
-        uint256 startTime;
-        uint256 rewardWeight;
-        uint256 pendingReward;
-        address tokenAddress;
-    }
-
     struct Campaign {
         CampaignMetadata metadata;
-        mapping(address => UserStakeInfo[]) userStakes;
-        mapping(address => uint256) userPendingRewards;
         mapping(address => uint256) userStakeCount;
+        mapping(address => address) userStakedToken;
+        mapping(address => uint256) userTotalStaked;
+        mapping(address => uint256) userAccumulatedRewardWeight;
+        mapping(address => uint256) userPendingRewards;
         uint256 totalStakeCount;
         uint256 totalWeight;
         uint256 totalRewardAllocated;
@@ -119,7 +113,7 @@ contract MultiTokenStakingCampaign is Ownable, ReentrancyGuard {
         newCampaign.metadata.totalRewards = _totalRewards;
         newCampaign.metadata.accumulatedStakeTime = 0;
         newCampaign.metadata.unclaimedRewards = _totalRewards;
-        newCampaign.metadata.rewardCoefficient = 1;
+        newCampaign.metadata.rewardCoefficient = SCALE_FACTOR;
         newCampaign.metadata.stakingTarget = _stakingTarget > 0
             ? _stakingTarget
             : 0;
@@ -179,66 +173,33 @@ contract MultiTokenStakingCampaign is Ownable, ReentrancyGuard {
         campaign.userStakeCount[msg.sender]++;
         campaign.totalStakeCount++;
 
-        uint256 rewardWeight = calculateRewardWeight(
-            _amount,
-            stakingDuration,
-            campaign.metadata.stakingTarget,
-            campaign.metadata.totalStaked[_tokenAddress],
-            campaign.metadata.accumulatedStakeTime,
-            campaign.userStakeCount[msg.sender],
-            campaign.totalStakeCount
-        );
+        uint256 rewardWeight = calculateRewardWeight(_amount, stakingDuration);
 
         campaign.totalWeight += rewardWeight;
+        campaign.userAccumulatedRewardWeight[msg.sender] += rewardWeight;
 
-        uint256 reward = calculateReward(
+        campaign.userTotalStaked[msg.sender] += _amount;
+        campaign.metadata.totalStaked[_tokenAddress] += _amount;
+        campaign.userStakedToken[msg.sender] = _tokenAddress;
+
+        uint256 estimatedReward = calculateReward(
             rewardWeight,
             campaign.metadata.totalRewards,
             campaign.totalWeight
         );
+        campaign.userPendingRewards[msg.sender] += estimatedReward;
 
-        campaign.totalRewardAllocated += reward;
-
-        campaign.userPendingRewards[msg.sender] += reward;
-        campaign.metadata.totalStaked[_tokenAddress] += _amount;
-        UserStakeInfo memory userStake;
-        userStake.amount = _amount;
-        userStake.startTime = block.timestamp;
-        userStake.tokenAddress = _tokenAddress;
-        userStake.rewardWeight = rewardWeight;
-        userStake.pendingReward = reward;
-        campaign.userStakes[msg.sender].push(userStake);
         emit TokensStaked(_campaignId, msg.sender, _tokenAddress, _amount);
     }
 
     function calculateRewardWeight(
         uint256 amount,
-        uint256 duration,
-        uint256 stakingTarget,
-        uint256 totalStaked,
-        uint256 totalDuration,
-        uint256 userStakeCount,
-        uint256 totalStakeCount
-    ) internal pure returns (uint256) {
-        uint256 amountWeight;
-
-        if (totalStaked < stakingTarget) {
-            amountWeight = (amount * 100) / stakingTarget;
-        } else {
-            amountWeight = (amount * 100) / totalStaked;
-        }
-
-        uint256 durationWeight = (duration * 100) / totalDuration;
-        uint256 stakeWeight = (userStakeCount * 100) / totalStakeCount;
-
-        uint256 totalWeight = (amountWeight *
-            40 +
-            durationWeight *
-            40 +
-            stakeWeight *
-            20) / 100;
-
-        uint256 scaledWeight = (totalWeight * 98) / 100 + 1;
+        uint256 duration
+    ) public pure returns (uint256) {
+        uint256 weight = amount * duration;
+        uint256 maxWeight = 10000;
+        uint256 scaledWeight = ((weight * 98) / maxWeight) + 1;
+        console.log("scaledWeight", scaledWeight);
         return scaledWeight;
     }
 
@@ -247,32 +208,18 @@ contract MultiTokenStakingCampaign is Ownable, ReentrancyGuard {
         uint256 totalRewards,
         uint256 totalWeight
     ) internal pure returns (uint256) {
+        require(totalWeight > 0, "Total weight must be greater than zero");
         uint256 reward = (rewardWeight * totalRewards) / totalWeight;
         return reward;
     }
 
-    function settleRewards(uint256 _campaignId) external onlyOwner {
-        Campaign storage campaign = campaigns[_campaignId];
-        require(
-            block.timestamp > campaign.metadata.endTime,
-            "Campaign has not ended"
-        );
-
-        campaign.metadata.rewardCoefficient =
-            (campaign.metadata.totalRewards * SCALE_FACTOR) /
-            campaign.totalRewardAllocated;
-        console.log(
-            "campaign.metadata.rewardCoefficient",
-            campaign.metadata.rewardCoefficient
-        );
-        emit RewardsSettled(_campaignId);
-    }
-
     function calculateFinalReward(
-        uint256 reward,
+        uint256 userWeight,
         uint256 rewardCoefficient
     ) internal pure returns (uint256) {
-        return (reward * rewardCoefficient) / SCALE_FACTOR;
+        console.log("userWeight", userWeight);
+        console.log("rewardCoefficient", rewardCoefficient);
+        return (userWeight * rewardCoefficient) / SCALE_FACTOR;
     }
 
     function claimRewards(uint256 _campaignId) external nonReentrant {
@@ -290,30 +237,62 @@ contract MultiTokenStakingCampaign is Ownable, ReentrancyGuard {
             block.timestamp <= campaign.metadata.rewardClaimEnd,
             "Reward claim period has ended"
         );
-        uint256 reward = campaign.userPendingRewards[msg.sender];
-        require(reward > 0, "No rewards to claim");
+        uint256 userWeight = campaign.userAccumulatedRewardWeight[msg.sender];
+        require(userWeight > 0, "No rewards to claim");
 
         uint256 finalReward = calculateFinalReward(
-            reward,
+            userWeight,
             campaign.metadata.rewardCoefficient
         );
-
-        for (uint256 i = 0; i < campaign.userStakes[msg.sender].length; i++) {
-            UserStakeInfo storage userStake = campaign.userStakes[msg.sender][
-                i
-            ];
-            IERC20(userStake.tokenAddress).safeTransfer(
-                msg.sender,
-                userStake.amount
-            );
-        }
         campaign.userPendingRewards[msg.sender] = 0;
+        console.log(
+            "campaign.metadata.unclaimedRewards",
+            campaign.metadata.unclaimedRewards
+        );
+        console.log("finalReward", finalReward);
+        console.log(campaign.metadata.unclaimedRewards);
+        console.log(finalReward);
         campaign.metadata.unclaimedRewards -= finalReward;
+        campaign.totalWeight -= userWeight;
+        campaign.userAccumulatedRewardWeight[msg.sender] = 0;
+
         IERC20(campaign.metadata.rewardToken).safeTransfer(
             msg.sender,
             finalReward
         );
+
         emit RewardsClaimed(_campaignId, msg.sender, finalReward);
+        uint256 remainingRewards = campaign.metadata.unclaimedRewards;
+
+        uint256 remainingWeight = campaign.totalWeight;
+        console.log("remainingWeight", remainingWeight);
+        console.log("remainingRewards", remainingRewards);
+        if (remainingWeight > 0) {
+            campaign.metadata.rewardCoefficient =
+                (remainingRewards * SCALE_FACTOR) /
+                remainingWeight;
+        }
+    }
+
+    function withdrawStakedTokens(uint256 _campaignId) external nonReentrant {
+        Campaign storage campaign = campaigns[_campaignId];
+        require(
+            block.timestamp > campaign.metadata.endTime,
+            "Campaign has not ended"
+        );
+        require(campaign.hasStaked[msg.sender], "No tokens to withdraw");
+
+        address stakedTokenAddress = campaign.userStakedToken[msg.sender];
+        uint256 totalStaked = campaign.userTotalStaked[msg.sender];
+
+        require(totalStaked > 0, "No tokens to withdraw");
+
+        IERC20(stakedTokenAddress).safeTransfer(msg.sender, totalStaked);
+
+        campaign.userTotalStaked[msg.sender] = 0;
+        campaign.hasStaked[msg.sender] = false;
+        campaign.userStakedToken[msg.sender] = address(0);
+
         emit TokensReturned(_campaignId, msg.sender);
     }
 
@@ -332,10 +311,30 @@ contract MultiTokenStakingCampaign is Ownable, ReentrancyGuard {
             owner(),
             unclaimedRewards
         );
+
+        campaign.metadata.unclaimedRewards = 0;
         emit UnclaimedRewardsClaimed(_campaignId, unclaimedRewards);
     }
 
-    function getCampaignMetadata(
+    function settleRewards(uint256 _campaignId) external onlyOwner {
+        Campaign storage campaign = campaigns[_campaignId];
+        require(
+            block.timestamp > campaign.metadata.endTime,
+            "Campaign has not ended"
+        );
+
+        campaign.metadata.rewardCoefficient =
+            (campaign.metadata.totalRewards * SCALE_FACTOR) /
+            (campaign.totalWeight == 0 ? 1 : campaign.totalWeight);
+
+        console.log(
+            "campaign.metadata.rewardCoefficient",
+            campaign.metadata.rewardCoefficient
+        );
+        emit RewardsSettled(_campaignId);
+    }
+
+    function getCampaignBasicMetadata(
         uint256 _campaignId
     )
         external
@@ -371,6 +370,37 @@ contract MultiTokenStakingCampaign is Ownable, ReentrancyGuard {
             campaign.totalWeight,
             campaign.totalRewardAllocated
         );
+    }
+
+    function getCampaignStakedToken(
+        uint256 _campaignId,
+        address _user
+    ) external view returns (address stakedTokenAddress) {
+        Campaign storage campaign = campaigns[_campaignId];
+        return campaign.userStakedToken[_user];
+    }
+
+    function getCampaignTotalStaked(
+        uint256 _campaignId,
+        address _user
+    ) external view returns (uint256 totalStaked) {
+        Campaign storage campaign = campaigns[_campaignId];
+        return campaign.metadata.totalStaked[campaign.userStakedToken[_user]];
+    }
+
+    function getUserAccumulatedRewardWeight(
+        uint256 _campaignId,
+        address _user
+    ) external view returns (uint256) {
+        Campaign storage campaign = campaigns[_campaignId];
+        return campaign.userAccumulatedRewardWeight[_user];
+    }
+
+    function getTotalWeight(
+        uint256 _campaignId
+    ) external view returns (uint256) {
+        Campaign storage campaign = campaigns[_campaignId];
+        return campaign.totalWeight;
     }
 }
 
