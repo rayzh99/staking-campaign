@@ -113,7 +113,6 @@ contract MultiTokenStakingCampaignTest is Test {
     }
 
     function testStakeETH() public {
-        // 创建一个接受ETH质押的活动
         vm.startPrank(owner);
         campaignContract.createCampaign(
             address(rewardToken),
@@ -121,14 +120,12 @@ contract MultiTokenStakingCampaignTest is Test {
             block.timestamp + 2 hours,
             block.timestamp + 3 hours,
             100,
-            address(0) // 设置stakingToken为address(0)以接受ETH质押
+            address(0)
         );
         vm.stopPrank();
 
-        // 设置用户的初始ETH余额
         vm.deal(user1, 1 ether);
 
-        // 用户质押ETH
         vm.warp(block.timestamp + 1 hours + 1 seconds);
         vm.startPrank(user1);
         uint256 initialETHBalance = user1.balance;
@@ -136,14 +133,12 @@ contract MultiTokenStakingCampaignTest is Test {
         uint256 finalETHBalance = user1.balance;
         vm.stopPrank();
 
-        // 检查用户的ETH余额变化
         assertEq(
             initialETHBalance - finalETHBalance,
             1 ether,
             "ETH should be staked"
         );
 
-        // 检查合约中的WETH余额
         uint256 contractWETHBalance = IERC20(campaignContract.WETH()).balanceOf(
             address(campaignContract)
         );
@@ -153,7 +148,6 @@ contract MultiTokenStakingCampaignTest is Test {
             "Contract should hold 1 ETH worth of WETH"
         );
 
-        // 解构 getCampaignBasicMetadata 返回的元组
         (
             ,
             uint256 startTime,
