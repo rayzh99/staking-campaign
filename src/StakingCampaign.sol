@@ -56,7 +56,6 @@ contract MultiTokenStakingCampaign is Ownable, ReentrancyGuard {
     event RewardsClaimed(uint256 campaignId, address staker, uint256 reward);
     event UnclaimedRewardsClaimed(uint256 campaignId, uint256 amount);
     event TokensReturned(uint256 campaignId, address staker);
-    event RewardsSettled(uint256 campaignId);
 
     function createCampaign(
         address _rewardToken,
@@ -115,14 +114,9 @@ contract MultiTokenStakingCampaign is Ownable, ReentrancyGuard {
 
     function stakeTokens(
         uint256 _campaignId,
-        address _tokenAddress,
         uint256 _amount
     ) external payable nonReentrant {
         Campaign storage campaign = campaigns[_campaignId];
-        require(
-            _tokenAddress == campaign.metadata.stakingToken,
-            "Token not allowed for staking"
-        );
         require(
             block.timestamp >= campaign.metadata.startTime,
             "Campaign has not started"
@@ -131,15 +125,20 @@ contract MultiTokenStakingCampaign is Ownable, ReentrancyGuard {
             block.timestamp <= campaign.metadata.endTime,
             "Campaign has ended"
         );
-        if (_tokenAddress == WETH) {
+        require(
+            campaign.userTotalStaked[msg.sender] + _amount >=
+                campaign.userTotalStaked[msg.sender],
+            "Staking amount overflow"
+        );
+
+        address _tokenAddress = campaign.metadata.stakingToken;
+        if (msg.value > 0) {
             require(msg.value == _amount, "Incorrect ETH amount sent");
             IWETH(WETH).deposit{value: _amount}();
-            IERC20(WETH).safeTransferFrom(
-                address(this),
-                address(this),
-                _amount
-            );
+            _tokenAddress = WETH;
         } else {
+            require(msg.value == 0, "WithETH should not be sent");
+            require(_amount > 0, "Invalid staking amount");
             IERC20(_tokenAddress).safeTransferFrom(
                 msg.sender,
                 address(this),
@@ -168,9 +167,18 @@ contract MultiTokenStakingCampaign is Ownable, ReentrancyGuard {
 
     function calculateFinalReward(
         uint256 userWeight,
+        uint256 totalWeight,
+        uint256 totalRewards,
         uint256 rewardCoefficient
     ) internal pure returns (uint256) {
-        return (userWeight * rewardCoefficient) / SCALE_FACTOR;
+        console.log("userWeight: %d", userWeight);
+        console.log("totalWeight: %d", totalWeight);
+        console.log("totalRewards: %d", totalRewards);
+        console.log("rewardCoefficient: %d", rewardCoefficient);
+
+        return
+            ((userWeight * rewardCoefficient * totalRewards) /
+                (totalWeight == 0 ? 1 : totalWeight)) / SCALE_FACTOR;
     }
 
     function claimRewards(uint256 _campaignId) external nonReentrant {
@@ -186,30 +194,35 @@ contract MultiTokenStakingCampaign is Ownable, ReentrancyGuard {
         uint256 userWeight = campaign.userAccumulatedRewardWeight[msg.sender];
         require(userWeight > 0, "No rewards to claim");
 
+        uint256 remainingRewards = campaign.metadata.unclaimedRewards;
+        uint256 remainingWeight = campaign.totalWeight - userWeight;
+        if (remainingWeight > 0) {
+            campaign.rewardCoefficient =
+                (remainingRewards * SCALE_FACTOR) /
+                campaign.metadata.totalRewards -
+                campaign.totalRewardAllocated;
+        }
+
         uint256 finalReward = calculateFinalReward(
             userWeight,
+            campaign.totalWeight,
+            campaign.metadata.unclaimedRewards,
             campaign.rewardCoefficient
         );
+
+        console.log("user finalReward: %d", finalReward);
 
         campaign.metadata.unclaimedRewards -= finalReward;
         campaign.totalWeight -= userWeight;
         campaign.userAccumulatedRewardWeight[msg.sender] = 0;
-        campaign.totalRewardAllocated += finalReward;
 
         IERC20(campaign.metadata.rewardToken).safeTransfer(
             msg.sender,
             finalReward
         );
+        campaign.totalRewardAllocated += finalReward;
 
         emit RewardsClaimed(_campaignId, msg.sender, finalReward);
-        uint256 remainingRewards = campaign.metadata.unclaimedRewards;
-        uint256 remainingWeight = campaign.totalWeight;
-
-        if (remainingWeight > 0) {
-            campaign.rewardCoefficient =
-                (remainingRewards * SCALE_FACTOR) /
-                remainingWeight;
-        }
     }
 
     function withdrawStakedTokens(uint256 _campaignId) external nonReentrant {
@@ -251,24 +264,6 @@ contract MultiTokenStakingCampaign is Ownable, ReentrancyGuard {
 
         campaign.metadata.unclaimedRewards = 0;
         emit UnclaimedRewardsClaimed(_campaignId, unclaimedRewards);
-    }
-
-    function settleRewards(uint256 _campaignId) external onlyOwner {
-        Campaign storage campaign = campaigns[_campaignId];
-        require(
-            block.timestamp > campaign.metadata.endTime,
-            "Campaign has not ended"
-        );
-
-        campaign.rewardCoefficient =
-            (campaign.metadata.totalRewards * SCALE_FACTOR) /
-            (campaign.totalWeight == 0 ? 1 : campaign.totalWeight);
-
-        campaign.totalRewardAllocated =
-            campaign.metadata.totalRewards -
-            campaign.metadata.unclaimedRewards;
-
-        emit RewardsSettled(_campaignId);
     }
 
     function getCampaignBasicMetadata(

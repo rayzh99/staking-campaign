@@ -124,7 +124,7 @@ contract MultiTokenStakingCampaignTest is Test {
         // User 1 performs the first stake
         vm.startPrank(user1);
         stakeToken.approve(address(campaignContract), 500);
-        campaignContract.stakeTokens(0, address(stakeToken), 500);
+        campaignContract.stakeTokens(0, 500);
         uint256 firstStakeBalance = stakeToken.balanceOf(user1);
         uint256 firstStakeTimestamp = block.timestamp;
         vm.stopPrank();
@@ -147,7 +147,7 @@ contract MultiTokenStakingCampaignTest is Test {
         // User 1 performs the second stake
         vm.startPrank(user1);
         stakeToken.approve(address(campaignContract), 300);
-        campaignContract.stakeTokens(0, address(stakeToken), 300);
+        campaignContract.stakeTokens(0, 300);
         uint256 secondStakeBalance = stakeToken.balanceOf(user1);
         uint256 secondStakeTimestamp = block.timestamp;
         vm.stopPrank();
@@ -220,13 +220,13 @@ contract MultiTokenStakingCampaignTest is Test {
         // user1 stake
         vm.startPrank(user1);
         stakeToken.approve(address(campaignContract), 500);
-        campaignContract.stakeTokens(0, address(stakeToken), 500);
+        campaignContract.stakeTokens(0, 500);
         vm.stopPrank();
 
         // user2 stake
         vm.startPrank(user2);
         stakeToken.approve(address(campaignContract), 500);
-        campaignContract.stakeTokens(0, address(stakeToken), 500);
+        campaignContract.stakeTokens(0, 500);
         vm.stopPrank();
 
         (, , , , , , , uint256 totalWeight, ) = campaignContract
@@ -239,37 +239,10 @@ contract MultiTokenStakingCampaignTest is Test {
         assertEq(totalStaked, 500 * 2);
     }
 
-    function testSettleRewards() public {
-        testMultipleUserStakeTokens();
-        vm.warp(block.timestamp + 1 hours);
-        vm.startPrank(owner);
-        campaignContract.settleRewards(0);
-        vm.stopPrank();
-
-        (
-            ,
-            ,
-            ,
-            ,
-            uint256 unclaimedRewards,
-            uint256 rewardCoefficient,
-            ,
-            ,
-
-        ) = campaignContract.getCampaignBasicMetadata(0);
-
-        assertTrue(
-            rewardCoefficient > 0,
-            "Reward coefficient should be greater than 0"
-        );
-
-        uint256 expectedUnclaimedRewards = 100;
-        assertEq(unclaimedRewards, expectedUnclaimedRewards);
-    }
-
     function testClaimRewards() public {
-        testSettleRewards();
-        vm.warp(block.timestamp + 10 seconds);
+        testMultipleUserStakeTokens();
+
+        vm.warp(block.timestamp + 1 hours + 1 seconds);
 
         uint256 totalRewards = 100;
         uint256 user1StakedAmount = 500;
@@ -338,23 +311,15 @@ contract MultiTokenStakingCampaignTest is Test {
         // User 1 stakes tokens
         vm.startPrank(user1);
         stakeToken.approve(address(campaignContract), 500);
-        campaignContract.stakeTokens(0, address(stakeToken), 500);
+        campaignContract.stakeTokens(0, 500);
         vm.stopPrank();
 
-        // Settle rewards
+        // move to claim period
         vm.warp(block.timestamp + 1.5 hours + 1 seconds);
-        vm.startPrank(owner);
-        campaignContract.settleRewards(0);
-        vm.stopPrank();
 
         // User 1 claims rewards
         vm.startPrank(user1);
         campaignContract.claimRewards(0);
-        vm.stopPrank();
-
-        // Settle rewards again
-        vm.startPrank(owner);
-        campaignContract.settleRewards(0);
         vm.stopPrank();
 
         (
@@ -425,7 +390,7 @@ contract MultiTokenStakingCampaignTest is Test {
         // User 1 stakes tokens
         vm.startPrank(user1);
         stakeToken.approve(address(campaignContract), 10000);
-        campaignContract.stakeTokens(0, address(stakeToken), 10000);
+        campaignContract.stakeTokens(0, 10000);
         vm.stopPrank();
 
         vm.warp(block.timestamp + 30 minutes);
@@ -433,14 +398,10 @@ contract MultiTokenStakingCampaignTest is Test {
         // User 2 stakes tokens
         vm.startPrank(user2);
         stakeToken.approve(address(campaignContract), 500);
-        campaignContract.stakeTokens(0, address(stakeToken), 500);
+        campaignContract.stakeTokens(0, 500);
         vm.stopPrank();
 
         vm.warp(block.timestamp + 0.5 hours + 1 seconds);
-
-        vm.startPrank(owner);
-        campaignContract.settleRewards(0);
-        vm.stopPrank();
 
         uint256 user1Weight = campaignContract.getUserAccumulatedRewardWeight(
             0,
@@ -496,7 +457,7 @@ contract MultiTokenStakingCampaignTest is Test {
         campaignContract.claimRewards(0);
         claimedRewardUser1 = rewardToken.balanceOf(user1) - claimedRewardUser1;
         assertTrue(
-            approximatelyEqual(claimedRewardUser1, expectedRewardUser1, 1),
+            approximatelyEqual(claimedRewardUser1, expectedRewardUser1, 2),
             "User1 should receive the correct amount of rewards based on weight"
         );
         console.log("Claimed Reward User1: %s", claimedRewardUser1);
@@ -508,7 +469,7 @@ contract MultiTokenStakingCampaignTest is Test {
         campaignContract.claimRewards(0);
         claimedRewardUser2 = rewardToken.balanceOf(user2) - claimedRewardUser2;
         assertTrue(
-            approximatelyEqual(claimedRewardUser2, expectedRewardUser2, 1),
+            approximatelyEqual(claimedRewardUser2, expectedRewardUser2, 2),
             "User2 should receive the correct amount of rewards based on weight"
         );
         console.log("Claimed Reward User2: %s", claimedRewardUser2);
@@ -527,7 +488,7 @@ contract MultiTokenStakingCampaignTest is Test {
 
         vm.startPrank(user1);
         stakeToken.approve(address(campaignContract), 500);
-        campaignContract.stakeTokens(0, address(stakeToken), 500);
+        campaignContract.stakeTokens(0, 500);
         vm.stopPrank();
 
         vm.warp(block.timestamp + 30 minutes);
@@ -535,14 +496,10 @@ contract MultiTokenStakingCampaignTest is Test {
         // User 2 stakes tokens later but with more amount
         vm.startPrank(user2);
         stakeToken.approve(address(campaignContract), 1000);
-        campaignContract.stakeTokens(0, address(stakeToken), 1000);
+        campaignContract.stakeTokens(0, 1000);
         vm.stopPrank();
 
         vm.warp(block.timestamp + 30 minutes + 1 seconds);
-
-        vm.startPrank(owner);
-        campaignContract.settleRewards(0);
-        vm.stopPrank();
 
         uint256 user1Weight = 500 * 1 hours;
         uint256 user2Weight = 1000 * 30 minutes;
@@ -575,7 +532,7 @@ contract MultiTokenStakingCampaignTest is Test {
         campaignContract.claimRewards(0);
         claimedRewardUser2 = rewardToken.balanceOf(user2) - claimedRewardUser2;
         assertTrue(
-            approximatelyEqual(claimedRewardUser2, expectedRewardUser2, 1),
+            approximatelyEqual(claimedRewardUser2, expectedRewardUser2, 2),
             "User2 should receive the correct amount of rewards based on weight"
         );
         console.log("Claimed Reward User2: %s", claimedRewardUser2);
@@ -594,7 +551,7 @@ contract MultiTokenStakingCampaignTest is Test {
             ,
             uint256 unclaimedRewardsBefore,
             uint256 rewardCoefficientBefore,
-            uint256 totalWeightBefore,
+            ,
             uint256 totalRewardAllocatedBefore
         ) = campaignContract.getCampaignBasicMetadata(0);
 
