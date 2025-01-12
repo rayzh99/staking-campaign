@@ -35,6 +35,7 @@ contract MultiTokenStakingCampaign is Ownable, ReentrancyGuard {
     address public WETH;
 
     constructor(address initialOwner, address _WETH) Ownable(initialOwner) {
+        require(_WETH != address(0), "Invalid WETH address");
         WETH = _WETH;
     }
 
@@ -99,7 +100,10 @@ contract MultiTokenStakingCampaign is Ownable, ReentrancyGuard {
         newCampaign.metadata.rewardClaimEnd = _rewardClaimEnd;
         newCampaign.metadata.totalRewards = _totalRewards;
         newCampaign.metadata.unclaimedRewards = _totalRewards;
-        newCampaign.metadata.stakingToken = _stakingToken;
+
+        newCampaign.metadata.stakingToken = _stakingToken == address(0)
+            ? address(0)
+            : _stakingToken;
 
         newCampaign.rewardCoefficient = 1 * SCALE_FACTOR;
 
@@ -132,9 +136,21 @@ contract MultiTokenStakingCampaign is Ownable, ReentrancyGuard {
         );
 
         address _tokenAddress = campaign.metadata.stakingToken;
+        console.log("Staking Token Address: %s", _tokenAddress);
+        console.log("Message Value: %s", msg.value);
+        console.log("Amount: %s", _amount);
+
         if (msg.value > 0) {
+            require(
+                _tokenAddress == address(0) ||
+                    _tokenAddress == address(_tokenAddress),
+                "ETH not allowed for this campaign"
+            );
             require(msg.value == _amount, "Incorrect ETH amount sent");
+            console.log("Calling WETH.deposit with value: %s", _amount);
             IWETH(WETH).deposit{value: _amount}();
+            console.log("WETH: %s", WETH);
+            console.log("WETH deposited");
             _tokenAddress = WETH;
         } else {
             require(msg.value == 0, "WithETH should not be sent");
