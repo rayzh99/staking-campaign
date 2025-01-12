@@ -3,21 +3,25 @@ pragma solidity ^0.8.13;
 
 import "forge-std/Test.sol";
 import "../test/mocks/MockERC20.sol";
+import "../test/mocks/MockWETH.sol";
 import "../src/StakingCampaign.sol";
 
 contract MultiTokenStakingCampaignTest is Test {
     MultiTokenStakingCampaign campaignContract;
     MockERC20 public rewardToken;
     MockERC20 public stakeToken;
+    MockWETH public weth;
     Helper public helper;
     address public owner = address(0x123);
     address public user1 = address(0x456);
     address public user2 = address(0x789);
+    address public wethAddress = address(0xabc);
 
     function setUp() public {
         rewardToken = new MockERC20(1000000, "RewardToken", 18, "RTK");
         stakeToken = new MockERC20(1000000, "StakeToken", 18, "STK");
-        campaignContract = new MultiTokenStakingCampaign(owner, address(0));
+        weth = new MockWETH();
+        campaignContract = new MultiTokenStakingCampaign(owner, address(weth));
 
         rewardToken.transfer(owner, 1000);
         stakeToken.transfer(user1, 100000);
@@ -106,6 +110,87 @@ contract MultiTokenStakingCampaignTest is Test {
         assertEq(rewardCoefficient, 1 * 10 ** 18);
         assertEq(totalWeight, 0);
         assertEq(totalRewardAllocated, 0);
+    }
+
+    function testStakeETH() public {
+        // 创建一个接受ETH质押的活动
+        vm.startPrank(owner);
+        campaignContract.createCampaign(
+            address(rewardToken),
+            block.timestamp + 1 hours,
+            block.timestamp + 2 hours,
+            block.timestamp + 3 hours,
+            100,
+            address(0) // 设置stakingToken为address(0)以接受ETH质押
+        );
+        vm.stopPrank();
+
+        // 设置用户的初始ETH余额
+        vm.deal(user1, 1 ether);
+
+        // 用户质押ETH
+        vm.warp(block.timestamp + 1 hours + 1 seconds);
+        vm.startPrank(user1);
+        uint256 initialETHBalance = user1.balance;
+        campaignContract.stakeTokens{value: 1 ether}(0, 1 ether);
+        uint256 finalETHBalance = user1.balance;
+        vm.stopPrank();
+
+        // 检查用户的ETH余额变化
+        assertEq(
+            initialETHBalance - finalETHBalance,
+            1 ether,
+            "ETH should be staked"
+        );
+
+        // 检查合约中的WETH余额
+        uint256 contractWETHBalance = IERC20(campaignContract.WETH()).balanceOf(
+            address(campaignContract)
+        );
+        assertEq(
+            contractWETHBalance,
+            1 ether,
+            "Contract should hold 1 ETH worth of WETH"
+        );
+
+        // 解构 getCampaignBasicMetadata 返回的元组
+        (
+            ,
+            uint256 startTime,
+            uint256 endTime,
+            ,
+            ,
+            ,
+            ,
+            uint256 totalWeight,
+
+        ) = campaignContract.getCampaignBasicMetadata(0);
+
+        uint256 stakingDuration = endTime - block.timestamp;
+        uint256 expectedWeight = 1 ether * stakingDuration;
+
+        assertEq(totalWeight, expectedWeight, "Total weight should be correct");
+
+        uint256 totalStaked = campaignContract.getCampaignTotalStaked(0);
+        assertEq(totalStaked, 1 ether, "Total staked should be 1 ETH");
+
+        (, , , , , uint256 unclaimedRewardsBefore, , , ) = campaignContract
+            .getCampaignBasicMetadata(0);
+        (, , , , , , uint256 rewardCoefficientBefore, , ) = campaignContract
+            .getCampaignBasicMetadata(0);
+        (, , , , , , , , uint256 totalRewardAllocatedBefore) = campaignContract
+            .getCampaignBasicMetadata(0);
+
+        helper.logFinalComparison(
+            0,
+            1 ether, // 用户质押的ETH
+            0,
+            1 ether, // 期望质押的ETH
+            0,
+            unclaimedRewardsBefore,
+            totalRewardAllocatedBefore,
+            rewardCoefficientBefore
+        );
     }
 
     function testSingleUserMultipleStakes() public {
